@@ -6,9 +6,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:aprimorar_video/core/engine/command_builder.dart';
-import 'package:aprimorar_video/core/engine/media_range.dart';
-import 'package:aprimorar_video/core/media/render_settings.dart';
+import 'package:vangogh/core/engine/command_builder.dart';
+import 'package:vangogh/core/engine/media_range.dart';
+import 'package:vangogh/core/media/render_settings.dart';
 
 final _out = <String, List<String>>{};
 

@@ -35,7 +35,12 @@ enum HwCodec {
 /// do pipeline que dá para testar sem aparelho conectado.
 abstract final class FfmpegCommand {
   /// Argumentos globais comuns a toda execução.
-  static List<String> base() => const ['-hide_banner', '-loglevel', 'error', '-y'];
+  static List<String> base() => const [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+  ];
 
   /// Corta [ranges] de um único input e concatena o resultado, aplicando
   /// formato, fps e áudio.
@@ -59,7 +64,9 @@ abstract final class FfmpegCommand {
   }) {
     final valid = ranges.where((range) => !range.isEmpty).toList();
     if (valid.isEmpty) {
-      throw ArgumentError('concatenate exige ao menos um trecho com duração > 0');
+      throw ArgumentError(
+        'concatenate exige ao menos um trecho com duração > 0',
+      );
     }
 
     final audioOut = settings.keepAudio && sourceHasAudio;
@@ -67,6 +74,7 @@ abstract final class FfmpegCommand {
       if (settings.format.width != null && settings.format.height != null)
         ..._fitToBox(settings.format.width!, settings.format.height!),
       if (settings.fps != null) 'fps=${settings.fps}',
+      ...settings.styleFilters,
     ];
     final audioChain = <String>[
       if (normalizeAudio) 'loudnorm=I=-16:TP=-1.5:LRA=11',
@@ -79,8 +87,10 @@ abstract final class FfmpegCommand {
       if (single) ..._inputSeek(valid.single),
       '-i',
       inputPath,
-      if (single) ..._simpleFilters(videoChain, audioChain, withAudio: audioOut)
-      else ..._complexFilters(valid, videoChain, audioChain, withAudio: audioOut),
+      if (single)
+        ..._simpleFilters(videoChain, audioChain, withAudio: audioOut)
+      else
+        ..._complexFilters(valid, videoChain, audioChain, withAudio: audioOut),
       ..._encodeVideo(
         codec: codec,
         width: settings.format.width,
@@ -96,6 +106,185 @@ abstract final class FfmpegCommand {
       outputPath,
     ];
   }
+
+  /// Junta clipes já codificados com os mesmos parâmetros, sem re-encode.
+  ///
+  /// É o segundo passo da montagem segmentada: cada trecho é renderizado com
+  /// seek de entrada (só decodifica o que vai para o corte) e aqui tudo vira um
+  /// arquivo só por cópia de pacotes — segundos, mesmo para vídeos longos.
+  static List<String> joinCopy({
+    required String listPath,
+    required String outputPath,
+  }) => [
+    ...base(),
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    listPath,
+    '-c',
+    'copy',
+    '-movflags',
+    '+faststart',
+    outputPath,
+  ];
+
+  /// Conteúdo do arquivo de lista do demuxer `concat`.
+  static String concatList(List<String> paths) =>
+      paths.map((path) => "file '${path.replaceAll("'", r"'\''")}'").join('\n');
+
+  /// Aprimora um vídeo inteiro: [videoFilters] e [audioFilters] já vêm
+  /// montados pela receita da feature, aqui só se encaixa no encode.
+  static List<String> enhanceVideo({
+    required String inputPath,
+    required String outputPath,
+    required List<String> videoFilters,
+    List<String> audioFilters = const [],
+    int? width,
+    int? height,
+    int? fps,
+    RenderQuality quality = RenderQuality.maxima,
+    HwCodec codec = HwCodec.mediaCodec,
+    bool sourceHasAudio = true,
+  }) => [
+    ...base(),
+    '-i',
+    inputPath,
+    if (videoFilters.isNotEmpty) ...['-vf', videoFilters.join(',')],
+    if (sourceHasAudio && audioFilters.isNotEmpty) ...[
+      '-af',
+      audioFilters.join(','),
+    ],
+    '-map',
+    '0:v:0',
+    if (sourceHasAudio) ...['-map', '0:a:0?'],
+    ..._encodeVideo(
+      codec: codec,
+      width: width,
+      height: height,
+      fps: fps,
+      quality: quality,
+    ),
+    if (sourceHasAudio) ..._encodeAudio(),
+    '-movflags',
+    '+faststart',
+    outputPath,
+  ];
+
+  /// Aprimora uma foto: um quadro só, JPEG de qualidade máxima com croma
+  /// completo (4:4:4) — sem a perda de cor que o 4:2:0 de vídeo traria.
+  static List<String> enhanceImage({
+    required String inputPath,
+    required String outputPath,
+    required List<String> filters,
+  }) => [
+    ...base(),
+    '-i',
+    inputPath,
+    '-vf',
+    [...filters, 'format=yuvj444p'].join(','),
+    '-frames:v',
+    '1',
+    '-q:v',
+    '1',
+    '-update',
+    '1',
+    outputPath,
+  ];
+
+  /// Um quadro em [at], com [filters] aplicados — base da prévia instantânea
+  /// (antes/depois) e das miniaturas da biblioteca.
+  static List<String> frame({
+    required String inputPath,
+    required String outputPath,
+    Duration at = Duration.zero,
+    List<String> filters = const [],
+    bool isImage = false,
+  }) => [
+    ...base(),
+    if (!isImage && at > Duration.zero) ...['-ss', seconds(at)],
+    '-i',
+    inputPath,
+    if (filters.isNotEmpty) ...['-vf', filters.join(',')],
+    '-frames:v',
+    '1',
+    '-q:v',
+    '2',
+    '-update',
+    '1',
+    outputPath,
+  ];
+
+  /// Tira de quadros (filmstrip) em uma imagem só, para a timeline.
+  ///
+  /// Decodifica só quadros-chave (`-skip_frame nokey`): em vez de abrir o
+  /// vídeo inteiro, lê um quadro a cada ~1–2 s, o que deixa a tira pronta em
+  /// fração de segundo mesmo em vídeos longos.
+  static List<String> filmstrip({
+    required String inputPath,
+    required String outputPath,
+    required Duration duration,
+    int tiles = 12,
+    int height = 96,
+  }) {
+    final secs = duration.inMilliseconds <= 0
+        ? 1.0
+        : duration.inMilliseconds / 1000;
+    final rate = (tiles / secs).clamp(0.0005, 30.0).toStringAsFixed(5);
+    return [
+      ...base(),
+      '-skip_frame',
+      'nokey',
+      '-i',
+      inputPath,
+      '-an',
+      '-vf',
+      'fps=$rate,scale=-2:$height:flags=bilinear,tile=${tiles}x1',
+      '-frames:v',
+      '1',
+      '-q:v',
+      '4',
+      '-update',
+      '1',
+      outputPath,
+    ];
+  }
+
+  /// Uma passada de análise para achar os melhores momentos.
+  ///
+  /// - Vídeo: só quadros-chave, reduzidos a 160 px, com o `scene score` de
+  ///   cada um gravado em [scenesPath] (cortes e movimento).
+  /// - Áudio: reamostrado a 16 kHz em blocos de 0,5 s, com o nível RMS de
+  ///   cada bloco gravado em [audioPath] (picos, fala, silêncio).
+  ///
+  /// Nada é codificado: a saída é `null`, então o custo é só de decodificar.
+  static List<String> analyze({
+    required String inputPath,
+    required String scenesPath,
+    required String audioPath,
+    bool sourceHasAudio = true,
+  }) => [
+    ...base(),
+    '-skip_frame',
+    'nokey',
+    '-i',
+    inputPath,
+    '-vf',
+    "scale=160:-2:flags=fast_bilinear,select='gte(scene,0)',"
+        "metadata=print:key=lavfi.scene_score:file='$scenesPath'",
+    '-fps_mode',
+    'passthrough',
+    if (sourceHasAudio) ...[
+      '-af',
+      'aresample=16000,asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,'
+          "ametadata=print:key=lavfi.astats.Overall.RMS_level:file='$audioPath'",
+    ] else
+      '-an',
+    '-f',
+    'null',
+    '-',
+  ];
 
   /// Formata duração como decimal fixo para argumentos do FFmpeg.
   ///

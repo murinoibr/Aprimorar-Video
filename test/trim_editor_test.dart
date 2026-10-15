@@ -1,6 +1,6 @@
-import 'package:aprimorar_video/features/trim/domain/entities/clip_segment.dart';
-import 'package:aprimorar_video/features/trim/domain/entities/trim_plan.dart';
-import 'package:aprimorar_video/features/trim/domain/services/trim_editor.dart';
+import 'package:vangogh/features/trim/domain/entities/clip_segment.dart';
+import 'package:vangogh/features/trim/domain/entities/trim_plan.dart';
+import 'package:vangogh/features/trim/domain/services/trim_editor.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const source = Duration(minutes: 2);

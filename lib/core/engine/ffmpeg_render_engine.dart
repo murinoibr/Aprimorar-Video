@@ -43,8 +43,6 @@ class FfmpegRenderEngine implements RenderEngine {
   @override
   Stream<RenderProgress> run(RenderRequest request) {
     final controller = StreamController<RenderProgress>();
-    _cancelled = false;
-    _logs.clear();
 
     // Um render por vez: o FFmpegKit compartilha o mesmo contexto nativo, e
     // sessões concorrentes disputam o encoder de hardware do aparelho.
@@ -57,6 +55,7 @@ class FfmpegRenderEngine implements RenderEngine {
     }
 
     _busy = true;
+    _cancelled = false;
     unawaited(_execute(request, controller));
     return controller.stream;
   }
@@ -68,106 +67,38 @@ class FfmpegRenderEngine implements RenderEngine {
     controller.add(const RenderProgress.idle());
 
     try {
-      final completer = Completer<FFmpegSession>();
+      final attempts = [request.arguments, ?request.fallbackArguments];
+      RenderFailure? lastFailure;
 
-      final session = await FFmpegKit.executeWithArgumentsAsync(
-        request.arguments,
-        (FFmpegSession session) {
-          if (!completer.isCompleted) completer.complete(session);
-        },
-        (Log log) => _onLog(log),
-        (Statistics stats) {
-          if (!controller.isClosed) {
-            controller.add(_toProgress(stats, request.expectedDurationMs));
-          }
-        },
-      );
-      _sessionId = session.getSessionId();
-
-      // `executeWithArgumentsAsync` devolve antes de terminar. Se o usuário
-      // cancelou entre o pedido e a criação da sessão, aborta agora.
-      if (_cancelled) {
-        await FFmpegKit.cancel(_sessionId);
-        _staging.discard(request.outputPath);
-        if (!controller.isClosed) {
-          controller.addError(const RenderCancelled(), StackTrace.current);
-          await controller.close();
-        }
-        return;
-      }
-
-      final finished = completer.future;
-      final state = await session.getState();
-      if (state == SessionState.created || state == SessionState.running) {
-        await finished;
-      }
-      if (controller.isClosed) return;
-
-      if (_cancelled) {
-        _staging.discard(request.outputPath);
-        controller.addError(const RenderCancelled(), StackTrace.current);
-        await controller.close();
-        return;
-      }
-
-      final returnCode = await session.getReturnCode();
-      final log = await session.getAllLogsAsString();
-      final output = File(request.outputPath);
-      final produced = output.existsSync() && output.lengthSync() > 0;
-
-      if (returnCode == null || returnCode.getValue() != ReturnCode.success) {
-        if (request.cleanupOnFailure) _staging.discard(request.outputPath);
-        controller.addError(
-          RenderFailure(_describeFailure(returnCode, log), log: _tail(log)),
-          StackTrace.current
+      for (var attempt = 0; attempt < attempts.length; attempt++) {
+        final usedFallback = attempt > 0;
+        final failure = await _runOnce(
+          attempts[attempt],
+          request,
+          controller,
+          usedFallback: usedFallback,
         );
-        await controller.close();
-        return;
+        if (failure == null) return;
+        lastFailure = failure;
+        if (_cancelled || controller.isClosed) return;
+        // Reserva: limpa a saída parcial e tenta de novo com o próximo codec.
+        _staging.discard(request.outputPath);
       }
 
-      if (!produced) {
-        // Sucesso com arquivo ausente quase sempre significa que a entrada não
-        // tinha faixa de vídeo: o FFmpeg não gera saída, mas sai com código 0.
-        if (request.cleanupOnFailure) _staging.discard(request.outputPath);
-        controller.addError(
-          const RenderFailure(
-            'A exportação terminou sem gerar arquivo. '
-            'O arquivo escolhido talvez não tenha faixa de vídeo.',
-          ),
-          StackTrace.current
-        );
-        await controller.close();
-        return;
-      }
-
-      controller.add(
-        RenderProgress(
-          fraction: 1,
-          stage: RenderStage.done,
-          processedMs: request.expectedDurationMs,
-          totalMs: request.expectedDurationMs,
-          sizeBytes: output.lengthSync(),
-        ),
-      );
-      await controller.close();
-    } on RenderCancelled {
-      _staging.discard(request.outputPath);
-      if (!controller.isClosed) {
-        controller.addError(const RenderCancelled(), StackTrace.current);
-        await controller.close();
-      }
-    } on RenderFailure catch (failure, stack) {
       if (request.cleanupOnFailure) _staging.discard(request.outputPath);
       if (!controller.isClosed) {
-        controller.addError(failure, stack);
+        controller.addError(lastFailure!, StackTrace.current);
         await controller.close();
       }
     } on Exception catch (error, stack) {
       if (request.cleanupOnFailure) _staging.discard(request.outputPath);
       if (!controller.isClosed) {
         controller.addError(
-          RenderFailure('Falha inesperada na exportação: $error', log: _tail(null)),
-          stack
+          RenderFailure(
+            'Falha inesperada na exportação: $error',
+            log: _tail(null),
+          ),
+          stack,
         );
         await controller.close();
       }
@@ -175,6 +106,97 @@ class FfmpegRenderEngine implements RenderEngine {
       _busy = false;
       _sessionId = null;
       unawaited(_staging.prune());
+    }
+  }
+
+  /// Executa uma tentativa. Devolve `null` quando o stream já foi encerrado
+  /// (sucesso ou cancelamento) e a falha quando ainda cabe uma nova tentativa.
+  Future<RenderFailure?> _runOnce(
+    List<String> arguments,
+    RenderRequest request,
+    StreamController<RenderProgress> controller, {
+    required bool usedFallback,
+  }) async {
+    final completer = Completer<FFmpegSession>();
+    _logs.clear();
+
+    final session = await FFmpegKit.executeWithArgumentsAsync(
+      arguments,
+      (FFmpegSession session) {
+        if (!completer.isCompleted) completer.complete(session);
+      },
+      _onLog,
+      (Statistics stats) {
+        if (!controller.isClosed) {
+          controller.add(_toProgress(stats, request.expectedDurationMs));
+        }
+      },
+    );
+    _sessionId = session.getSessionId();
+
+    // `executeWithArgumentsAsync` devolve antes de terminar. Se o usuário
+    // cancelou entre o pedido e a criação da sessão, aborta agora.
+    if (_cancelled) {
+      await FFmpegKit.cancel(_sessionId);
+      await _closeCancelled(request, controller);
+      return null;
+    }
+
+    final state = await session.getState();
+    if (state == SessionState.created || state == SessionState.running) {
+      await completer.future;
+    }
+    if (controller.isClosed) return null;
+
+    if (_cancelled) {
+      await _closeCancelled(request, controller);
+      return null;
+    }
+
+    final returnCode = await session.getReturnCode();
+    final log = await session.getAllLogsAsString();
+
+    if (returnCode == null || returnCode.getValue() != ReturnCode.success) {
+      if (returnCode != null && returnCode.getValue() == ReturnCode.cancel) {
+        await _closeCancelled(request, controller);
+        return null;
+      }
+      return RenderFailure(_describeFailure(returnCode, log), log: _tail(log));
+    }
+
+    final output = File(request.outputPath);
+    final produced = output.existsSync() && output.lengthSync() > 0;
+    if (request.expectsOutput && !produced) {
+      // Sucesso com arquivo ausente quase sempre significa que a entrada não
+      // tinha faixa de vídeo: o FFmpeg não gera saída, mas sai com código 0.
+      return const RenderFailure(
+        'A exportação terminou sem gerar arquivo. '
+        'O arquivo escolhido talvez não tenha faixa de vídeo.',
+      );
+    }
+
+    controller.add(
+      RenderProgress(
+        fraction: 1,
+        stage: RenderStage.done,
+        processedMs: request.expectedDurationMs,
+        totalMs: request.expectedDurationMs,
+        sizeBytes: produced ? output.lengthSync() : 0,
+        usedFallback: usedFallback,
+      ),
+    );
+    await controller.close();
+    return null;
+  }
+
+  Future<void> _closeCancelled(
+    RenderRequest request,
+    StreamController<RenderProgress> controller,
+  ) async {
+    _staging.discard(request.outputPath);
+    if (!controller.isClosed) {
+      controller.addError(const RenderCancelled(), StackTrace.current);
+      await controller.close();
     }
   }
 
@@ -214,7 +236,8 @@ class FfmpegRenderEngine implements RenderEngine {
     if (text.contains('no space left') || text.contains('enospc')) {
       return 'Sem espaço no aparelho. Libere memória e tente de novo.';
     }
-    if (text.contains('invalid data found') || text.contains('moov atom not found')) {
+    if (text.contains('invalid data found') ||
+        text.contains('moov atom not found')) {
       return 'O arquivo de origem parece corrompido ou não é um vídeo válido.';
     }
     if (text.contains('permission denied') || text.contains('eperm')) {
@@ -223,7 +246,8 @@ class FfmpegRenderEngine implements RenderEngine {
     if (text.contains('no such file')) {
       return 'O arquivo de origem não foi encontrado. Escolha o vídeo novamente.';
     }
-    if (text.contains('unknown encoder') || text.contains('encoder not found')) {
+    if (text.contains('unknown encoder') ||
+        text.contains('encoder not found')) {
       return 'Este aparelho não suporta o codec de vídeo escolhido.';
     }
     final value = code?.getValue();

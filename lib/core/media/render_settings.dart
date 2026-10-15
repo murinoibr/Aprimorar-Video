@@ -1,3 +1,5 @@
+import 'cinema_look.dart';
+
 enum RenderQuality {
   leve('Leve', 'Arquivo pequeno, exporta mais rápido', 28),
   equilibrado('Equilibrado', 'Recomendado', 23),
@@ -39,6 +41,8 @@ class RenderSettings {
     this.fps,
     this.quality = RenderQuality.equilibrado,
     this.keepAudio = true,
+    this.look = CinemaLook.natural,
+    this.cinemaBars = false,
   });
 
   final OutputFormat format;
@@ -46,18 +50,31 @@ class RenderSettings {
   final RenderQuality quality;
   final bool keepAudio;
 
+  /// Color grading aplicado no export.
+  final CinemaLook look;
+
+  /// Faixas pretas 2.39:1.
+  final bool cinemaBars;
+
+  /// Filtros de estética (look + faixas), aplicados depois da escala.
+  List<String> get styleFilters => [
+    ...look.filters,
+    if (cinemaBars) ...cinemaBarsFilters,
+  ];
+
   static const defaults = RenderSettings();
   static const fpsOptions = [24, 30, 60];
 
   int get crf => quality.crf;
 
   bool get matchesSource =>
-      format.keepsOriginalSize && fps == null;
+      format.keepsOriginalSize && fps == null && styleFilters.isEmpty;
 
   String get label => [
     format.ratio,
     fps == null ? 'fps original' : '${fps}fps',
     quality.label,
+    if (!look.isNeutral) look.label,
   ].join(' · ');
 
   RenderSettings copyWith({
@@ -65,12 +82,16 @@ class RenderSettings {
     int? fps,
     RenderQuality? quality,
     bool? keepAudio,
+    CinemaLook? look,
+    bool? cinemaBars,
     bool clearFps = false,
   }) => RenderSettings(
     format: format ?? this.format,
     fps: clearFps ? null : (fps ?? this.fps),
     quality: quality ?? this.quality,
     keepAudio: keepAudio ?? this.keepAudio,
+    look: look ?? this.look,
+    cinemaBars: cinemaBars ?? this.cinemaBars,
   );
 
   @override
@@ -80,8 +101,11 @@ class RenderSettings {
           other.format == format &&
           other.fps == fps &&
           other.quality == quality &&
-          other.keepAudio == keepAudio;
+          other.keepAudio == keepAudio &&
+          other.look == look &&
+          other.cinemaBars == cinemaBars;
 
   @override
-  int get hashCode => Object.hash(format, fps, quality, keepAudio);
+  int get hashCode =>
+      Object.hash(format, fps, quality, keepAudio, look, cinemaBars);
 }

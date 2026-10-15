@@ -20,6 +20,7 @@ class RenderProgress {
     this.totalMs = 0,
     this.speed,
     this.sizeBytes = 0,
+    this.usedFallback = false,
   });
 
   const RenderProgress.idle()
@@ -28,7 +29,8 @@ class RenderProgress {
       processedMs = 0,
       totalMs = 0,
       speed = null,
-      sizeBytes = 0;
+      sizeBytes = 0,
+      usedFallback = false;
 
   /// 0..1, sempre dentro dos limites (FFmpeg pode reportar > total em
   ///BUFFER/CONCAT, onde o tempo de entrada excede o de saída).
@@ -40,6 +42,11 @@ class RenderProgress {
   /// Velocidade de encode relatada pelo FFmpeg (ex.: `1.8x`).
   final double? speed;
   final int sizeBytes;
+
+  /// Verdadeiro quando o encoder de hardware falhou e o render saiu pelo
+  /// codec de reserva. Quem monta vários clipes usa isso para manter todos
+  /// no mesmo codec (a junção por cópia exige).
+  final bool usedFallback;
 
   int get percent => (fraction * 100).round().clamp(0, 100);
 
@@ -63,9 +70,19 @@ class RenderRequest {
     required this.expectedDurationMs,
     this.label = 'Exportar',
     this.cleanupOnFailure = true,
+    this.fallbackArguments,
+    this.expectsOutput = true,
   });
 
   final List<String> arguments;
+
+  /// Mesma operação com um codec por software. O motor tenta estes
+  /// argumentos se a primeira execução falhar — encoder de hardware ausente
+  /// ou recusando a resolução é a falha mais comum em aparelhos Android.
+  final List<String>? fallbackArguments;
+
+  /// Falso para passadas de análise, que não geram arquivo em [outputPath].
+  final bool expectsOutput;
 
   /// Caminho absoluto do arquivo a ser produzido.
   final String outputPath;
@@ -93,7 +110,8 @@ class RenderFailure implements Exception {
   final String? log;
 
   @override
-  String toString() => log == null ? 'RenderFailure: $message' : 'RenderFailure: $message\n$log';
+  String toString() =>
+      log == null ? 'RenderFailure: $message' : 'RenderFailure: $message\n$log';
 }
 
 /// O usuário cancelou o render.

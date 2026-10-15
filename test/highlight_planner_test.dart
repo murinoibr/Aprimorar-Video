@@ -1,6 +1,6 @@
-import 'package:aprimorar_video/features/highlights/domain/entities/moment.dart';
-import 'package:aprimorar_video/features/highlights/domain/entities/target_duration.dart';
-import 'package:aprimorar_video/features/highlights/domain/services/highlight_planner.dart';
+import 'package:vangogh/features/highlights/domain/entities/moment.dart';
+import 'package:vangogh/features/highlights/domain/entities/target_duration.dart';
+import 'package:vangogh/features/highlights/domain/services/highlight_planner.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Moment _moment(String id, int startSec, int endSec, double score) => Moment(

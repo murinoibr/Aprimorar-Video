@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/theme/app_colors.dart';
@@ -15,6 +17,7 @@ class TrimTimeline extends StatelessWidget {
     required this.onSelect,
     required this.onDragStart,
     required this.onEdgeChanged,
+    this.filmstripPath,
   });
 
   final Duration sourceDuration;
@@ -25,6 +28,9 @@ class TrimTimeline extends StatelessWidget {
   final ValueChanged<int> onSelect;
   final VoidCallback onDragStart;
   final void Function({Duration? start, Duration? end}) onEdgeChanged;
+
+  /// Tira de quadros do vídeo; sem ela, uma forma de onda decorativa.
+  final String? filmstripPath;
 
   static const double rulerHeight = 20;
   static const double trackHeight = 58;
@@ -54,7 +60,8 @@ class TrimTimeline extends StatelessWidget {
           height: rulerHeight + trackHeight,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTapDown: (details) => _scrub(details.localPosition.dx, x, position),
+            onTapDown: (details) =>
+                _scrub(details.localPosition.dx, x, position),
             onHorizontalDragStart: (details) {
               onDragStart();
               _scrub(details.localPosition.dx, x, position);
@@ -73,20 +80,33 @@ class TrimTimeline extends StatelessWidget {
                   left: 0,
                   right: 0,
                   height: trackHeight - 12,
-                  child: const _Waveform(color: AppColors.surfaceTop),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: filmstripPath == null
+                        ? const _Waveform(color: AppColors.surfaceTop)
+                        : Opacity(
+                            opacity: 0.55,
+                            child: Image.file(
+                              File(filmstripPath!),
+                              fit: BoxFit.fill,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, _, _) =>
+                                  const _Waveform(color: AppColors.surfaceTop),
+                            ),
+                          ),
+                  ),
                 ),
                 Positioned(
                   top: rulerHeight + 6,
                   left: 0,
                   right: 0,
                   height: trackHeight - 12,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
+                  child: IgnorePointer(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: AppColors.surfaceHigh.withValues(alpha: 0.5),
+                        color: Colors.black.withValues(alpha: 0.45),
                         border: Border.all(color: AppColors.border),
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(8),
                       ),
                     ),
                   ),
@@ -184,11 +204,13 @@ class _SegmentBar extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: isActive
-            ? AppColors.primary.withValues(alpha: 0.55)
-            : AppColors.primary.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(10),
+            ? AppColors.primary.withValues(alpha: 0.14)
+            : Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: isActive ? AppColors.primary : AppColors.primaryDim,
+          color: isActive
+              ? AppColors.primary
+              : Colors.white.withValues(alpha: 0.35),
           width: isActive ? 2 : 1,
         ),
       ),
@@ -228,7 +250,7 @@ class _EdgeHandle extends StatelessWidget {
             width: 4,
             height: 28,
             decoration: BoxDecoration(
-              color: AppColors.textPrimary,
+              color: AppColors.primary,
               borderRadius: BorderRadius.circular(4),
             ),
           ),
@@ -261,7 +283,11 @@ class _Ruler extends StatelessWidget {
           top: 0,
           child: Text(
             Duration(milliseconds: ms).clock,
-            style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+            style: const TextStyle(
+              fontSize: 9.5,
+              color: AppColors.textMuted,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
           ),
         ),
       );

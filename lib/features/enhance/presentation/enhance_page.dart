@@ -1,34 +1,37 @@
-import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:video_player/video_player.dart';
 
+import '../../../core/engine/engine_providers.dart';
 import '../../../core/media/media_asset.dart';
 import '../../../core/media/media_providers.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_theme.dart';
+import '../../../shared/widgets/media_widgets.dart';
 import '../../../shared/widgets/ui_kit.dart';
-import '../../library/application/library_controller.dart';
 import '../application/enhance_controller.dart';
-import '../domain/entities/enhance_job.dart';
 import '../domain/entities/enhance_options.dart';
-import 'widgets/enhance_widgets.dart';
+import '../domain/services/enhance_recipe.dart';
 
 class EnhancePage extends ConsumerWidget {
   const EnhancePage({super.key});
 
-  Future<void> _pick(BuildContext context, WidgetRef ref, EnhanceKind kind) async {
+  static Future<void> pickInto(
+    BuildContext context,
+    WidgetRef ref, {
+    bool videos = true,
+    bool images = true,
+  }) async {
     final picker = ref.read(mediaPickerProvider);
-    final controller = ref.read(enhanceControllerProvider.notifier);
-
-    if (kind == EnhanceKind.video) {
-      final asset = await picker.pickVideo();
-      if (asset != null) controller.setSources([asset]);
-      return;
-    }
-
-    final asset = await picker.pickImages();
-    if (asset != null) controller.setSources([asset]);
+    final assets = await pickSafely<List<MediaAsset>>(context, () async {
+      if (videos && images) return picker.pickMedia();
+      if (images) return picker.pickImages();
+      final video = await picker.pickVideo();
+      return video == null ? const [] : [video];
+    });
+    if (assets == null || assets.isEmpty) return;
+    await ref.read(enhanceControllerProvider.notifier).addSources(assets);
   }
 
   @override
@@ -36,564 +39,613 @@ class EnhancePage extends ConsumerWidget {
     final state = ref.watch(enhanceControllerProvider);
     final controller = ref.read(enhanceControllerProvider.notifier);
     final options = state.options;
+    final current = state.current;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Melhorar qualidade')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-        children: [
-          EnhanceKindSelector(
-            selected: options.kind,
-            onChanged: controller.setKind,
-          ),
-          const SizedBox(height: 16),
-          if (!state.hasSources)
-            SurfaceCard(
-              onTap: () => _pick(context, ref, options.kind),
-              child: Row(
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _Header(
+              hasSources: state.hasSources,
+              busy: state.isRunning,
+              onClear: controller.clear,
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                 children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: AppColors.teal.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(14),
+                  if (current == null)
+                    ImportStage(
+                      title: 'Traga um vídeo ou fotos',
+                      message:
+                          'Upscale até 4K, menos ruído, mais nitidez e looks de '
+                          'cinema. Tudo no aparelho, sem enviar nada.',
+                      onTap: () => pickInto(context, ref),
+                      secondary: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _MiniAction(
+                            icon: Icons.movie_outlined,
+                            label: 'Vídeo',
+                            onTap: () => pickInto(context, ref, images: false),
+                          ),
+                          const SizedBox(width: 10),
+                          _MiniAction(
+                            icon: Icons.photo_library_outlined,
+                            label: 'Fotos',
+                            onTap: () => pickInto(context, ref, videos: false),
+                          ),
+                        ],
+                      ),
+                    )
+                  else ...[
+                    _LivePreview(source: current, options: options),
+                    const SizedBox(height: 12),
+                    _SourceStrip(
+                      sources: state.sources,
+                      selected: state.selected,
+                      onSelect: controller.select,
+                      onRemove: controller.removeSource,
+                      onAdd: () => pickInto(context, ref),
+                      enabled: !state.isRunning,
                     ),
-                    child: Icon(
-                      options.kind == EnhanceKind.video
-                          ? Icons.video_file_rounded
-                          : Icons.add_photo_alternate_rounded,
-                      color: AppColors.teal,
+                    SectionLabel(
+                      'Resolução',
+                      trailing: Text(
+                        _resolutionHint(options, current),
+                        style: AppTheme.timecode.copyWith(fontSize: 11),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          options.kind == EnhanceKind.video
-                              ? 'Escolher vídeo'
-                              : 'Escolher imagens',
-                          style: Theme.of(context).textTheme.titleMedium,
+                    ChoiceRow<EnhanceResolution>(
+                      values: EnhanceResolution.values,
+                      selected: options.resolution,
+                      label: (r) => r.label,
+                      hint: (r) => r.hint,
+                      onChanged: (r) => controller.updateOptions(
+                        options.copyWith(resolution: r),
+                      ),
+                    ),
+                    const SectionLabel('Look de cinema'),
+                    LookStrip(
+                      selected: options.look,
+                      onChanged: (l) =>
+                          controller.updateOptions(options.copyWith(look: l)),
+                    ),
+                    ToggleTile(
+                      title: 'Faixas 2.39:1',
+                      subtitle: 'Widescreen de cinema, sem cortar a imagem',
+                      icon: Icons.crop_7_5_rounded,
+                      value: options.cinemaBars,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(cinemaBars: v),
+                      ),
+                    ),
+                    const SectionLabel('Limpeza e detalhe'),
+                    FineSlider(
+                      label: 'Nitidez',
+                      bipolar: false,
+                      value: options.sharpness,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(sharpness: v),
+                      ),
+                    ),
+                    ToggleTile(
+                      title: 'Reduzir ruído',
+                      subtitle: 'Tira o grão de pouca luz e o banding',
+                      icon: Icons.grain_rounded,
+                      value: options.denoise,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(denoise: v),
+                      ),
+                    ),
+                    if (state.hasVideo) ...[
+                      ToggleTile(
+                        title: 'Estabilizar',
+                        subtitle: 'Suaviza a tremida de câmera na mão',
+                        icon: Icons.control_camera_rounded,
+                        value: options.stabilize,
+                        onChanged: (v) => controller.updateOptions(
+                          options.copyWith(stabilize: v),
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Aumenta resolução, nitidez e limpa o áudio',
-                          style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      ToggleTile(
+                        title: 'Áudio limpo',
+                        subtitle: 'Menos chiado e volume no padrão das redes',
+                        icon: Icons.graphic_eq_rounded,
+                        value: options.cleanAudio,
+                        onChanged: (v) => controller.updateOptions(
+                          options.copyWith(cleanAudio: v),
                         ),
-                      ],
+                      ),
+                    ],
+                    SectionLabel(
+                      'Cor',
+                      trailing: options.hasColorAdjust
+                          ? GestureDetector(
+                              onTap: () => controller.updateOptions(
+                                options.resetColor(),
+                              ),
+                              child: const Text(
+                                'ZERAR',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  letterSpacing: 1.4,
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            )
+                          : null,
                     ),
-                  ),
-                  const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                    FineSlider(
+                      label: 'Exposição',
+                      value: options.brightness,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(brightness: v),
+                      ),
+                    ),
+                    FineSlider(
+                      label: 'Contraste',
+                      value: options.contrast,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(contrast: v),
+                      ),
+                    ),
+                    FineSlider(
+                      label: 'Saturação',
+                      value: options.saturation,
+                      onChanged: (v) => controller.updateOptions(
+                        options.copyWith(saturation: v),
+                      ),
+                    ),
+                    FineSlider(
+                      label: 'Temperatura',
+                      value: options.warmth,
+                      onChanged: (v) =>
+                          controller.updateOptions(options.copyWith(warmth: v)),
+                    ),
+                  ],
                 ],
               ),
-            )
-          else
-            _SourceChips(
-              sources: state.sources,
-              onAdd: () => _pick(context, ref, options.kind),
-              onRemove: controller.removeSource,
             ),
-
-          if (state.hasSources) ...[
-            const SizedBox(height: 16),
-            _EnhancePreview(
-              source: state.sources.first,
-              result: state.status == EnhanceStatus.done && state.results.isNotEmpty
-                  ? state.results.first
-                  : null,
-            ),
+            if (state.hasSources) _ActionBar(state: state),
           ],
+        ),
+      ),
+    );
+  }
 
-          const SizedBox(height: 8),
-          PresetSelector(
-            selected: options.preset,
-            onChanged: (preset) =>
-                controller.updateOptions(options.copyWith(preset: preset)),
-          ),
+  static String _resolutionHint(EnhanceOptions options, MediaAsset source) {
+    final size = EnhanceRecipe.outputSize(options, source);
+    if (!source.hasSize || size == null) return '';
+    final from = '${source.width}×${source.height}';
+    final to = '${size.$1}×${size.$2}';
+    return from == to ? from : '$from  ›  $to';
+  }
+}
 
-          const SectionTitle(title: 'Ajustes rápidos'),
-          FilterSwitchTile(
-            title: 'Upscale com IA',
-            subtitle: options.estimatedScaleFactor > 1
-                ? 'Reconstroi detalhes em ${options.estimatedScaleFactor}x'
-                : 'Sem ganho de escala nesta resolução',
-            icon: Icons.auto_fix_high_rounded,
-            value: options.aiUpscale,
-            onChanged: (v) =>
-                controller.updateOptions(options.copyWith(aiUpscale: v)),
-          ),
-          FilterSwitchTile(
-            title: 'Reduzir ruído',
-            subtitle: 'Limpa grão de vídeo gravado com pouca luz',
-            icon: Icons.blur_on_rounded,
-            value: options.denoise,
-            onChanged: (v) => controller.updateOptions(options.copyWith(denoise: v)),
-          ),
-          FilterSwitchTile(
-            title: 'Aumentar nitidez',
-            subtitle: 'Deixa bordas e detalhes mais definidos',
-            icon: Icons.center_focus_strong_rounded,
-            value: options.sharpen,
-            onChanged: (v) =>
-                controller.updateOptions(options.copyWith(sharpen: v)),
-          ),
-          if (options.kind == EnhanceKind.video) ...[
-            FilterSwitchTile(
-              title: 'Estabilizar',
-              subtitle: 'Reduz tremida de câmera na mão',
-              icon: Icons.videocam_rounded,
-              value: options.stabilize,
-              onChanged: (v) =>
-                  controller.updateOptions(options.copyWith(stabilize: v)),
-            ),
-            FilterSwitchTile(
-              title: 'Normalizar áudio',
-              subtitle: 'Deixa o som no mesmo volume do original',
-              icon: Icons.volume_up_rounded,
-              value: options.normalizeAudio,
-              onChanged: (v) =>
-                  controller.updateOptions(options.copyWith(normalizeAudio: v)),
-            ),
-          ],
+class _Header extends StatelessWidget {
+  const _Header({
+    required this.hasSources,
+    required this.busy,
+    required this.onClear,
+  });
 
-          const SectionTitle(title: 'Correções de cor'),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.border),
-            ),
+  final bool hasSources;
+  final bool busy;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 8, 10),
+      child: Row(
+        children: [
+          Expanded(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                AdjustmentSlider(
-                  label: 'Brilho',
-                  value: options.brightness,
-                  onChanged: (v) =>
-                      controller.updateOptions(options.copyWith(brightness: v)),
-                ),
-                AdjustmentSlider(
-                  label: 'Contraste',
-                  value: options.contrast,
-                  onChanged: (v) =>
-                      controller.updateOptions(options.copyWith(contrast: v)),
-                ),
-                AdjustmentSlider(
-                  label: 'Saturação',
-                  value: options.saturation,
-                  onChanged: (v) =>
-                      controller.updateOptions(options.copyWith(saturation: v)),
+                const Text('QUALIDADE · LOOK · COR', style: AppTheme.label),
+                const SizedBox(height: 4),
+                Text(
+                  'Aprimorar',
+                  style: Theme.of(context).textTheme.headlineMedium,
                 ),
               ],
             ),
           ),
-
-          const SizedBox(height: 20),
-          if (options.activeFilters.isNotEmpty) ...[
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final filter in options.activeFilters)
-                  PillLabel(text: filter, color: AppColors.teal),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
-
-          if (state.isRunning)
-            EnhanceProgressCard(
-              progress: EnhanceProgress(
-                stage: state.stage,
-                percent: state.progress,
-                etaSeconds: state.etaSeconds,
-              ),
-              onCancel: controller.cancel,
-            )
-          else if (state.status == EnhanceStatus.done)
-            _DonePanel(
-              results: state.results,
-              onRerun: controller.run,
-              onSave: () {
-                final feature = options.kind == EnhanceKind.video
-                    ? 'Qualidade (vídeo)'
-                    : 'Qualidade (imagens)';
-                for (final asset in state.results) {
-                  ref.read(libraryProvider.notifier).add(asset, feature);
-                }
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Salvo na biblioteca')),
-                );
-              },
-            )
-          else
-            PrimaryGradientButton(
-              label: 'Melhorar qualidade agora',
-              icon: Icons.hd_rounded,
-              gradient: AppColors.cool,
-              enabled: state.hasSources,
-              onPressed: controller.run,
-            ),
-
-          if (state.errorMessage != null) ...[
-            const SizedBox(height: 12),
-            Text(
-              state.errorMessage!,
-              style: const TextStyle(color: AppColors.danger, fontSize: 13),
-            ),
-          ],
+          if (hasSources && !busy)
+            TextButton(onPressed: onClear, child: const Text('Limpar')),
         ],
       ),
     );
   }
 }
 
-class _EnhancePreview extends StatefulWidget {
-  const _EnhancePreview({required this.source, this.result});
+class _MiniAction extends StatelessWidget {
+  const _MiniAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
 
-  final MediaAsset source;
-  final MediaAsset? result;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
 
   @override
-  State<_EnhancePreview> createState() => _EnhancePreviewState();
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 40),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      icon: Icon(icon, size: 16),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
+  }
 }
 
-class _EnhancePreviewState extends State<_EnhancePreview> {
-  VideoPlayerController? _videoController;
-  bool _showResult = false;
-  String? _loadedPath;
+/// Prévia instantânea: um quadro real, processado pela mesma receita do
+/// export final, comparado lado a lado com o original. Cada ajuste gera um
+/// quadro novo em fração de segundo — o cliente vê o resultado antes de
+/// gastar minutos de render.
+class _LivePreview extends ConsumerStatefulWidget {
+  const _LivePreview({required this.source, required this.options});
 
-  MediaAsset get _activeAsset =>
-      _showResult && widget.result != null ? widget.result! : widget.source;
+  final MediaAsset source;
+  final EnhanceOptions options;
+
+  @override
+  ConsumerState<_LivePreview> createState() => _LivePreviewState();
+}
+
+class _LivePreviewState extends ConsumerState<_LivePreview> {
+  String? _before;
+  String? _after;
+  bool _loading = false;
+  Timer? _debounce;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadVideoIfNeeded();
+    _schedule(immediate: true, withBefore: true);
   }
 
   @override
-  void didUpdateWidget(covariant _EnhancePreview oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.source.path != widget.source.path ||
-        oldWidget.result?.path != widget.result?.path) {
-      _showResult = false;
-      _loadVideoIfNeeded();
+  void didUpdateWidget(covariant _LivePreview old) {
+    super.didUpdateWidget(old);
+    final sourceChanged = old.source.path != widget.source.path;
+    if (sourceChanged) {
+      _before = null;
+      _after = null;
+    }
+    if (sourceChanged || old.options != widget.options) {
+      _schedule(
+        immediate: sourceChanged,
+        withBefore:
+            sourceChanged ||
+            old.options.resolution != widget.options.resolution,
+      );
     }
   }
 
   @override
   void dispose() {
-    _videoController?.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadVideoIfNeeded() async {
-    final asset = _activeAsset;
-    final path = asset.isVideo ? asset.path : null;
-    if (_loadedPath == path) return;
-
-    final previous = _videoController;
-    _videoController = null;
-    _loadedPath = path;
-    await previous?.dispose();
-
-    if (path == null) {
-      if (mounted) setState(() {});
-      return;
-    }
-
-    final next = VideoPlayerController.file(File(path));
-    _videoController = next;
-    try {
-      await next.initialize();
-      if (mounted && identical(_videoController, next)) setState(() {});
-    } catch (_) {
-      if (mounted && identical(_videoController, next)) setState(() {});
-    }
+  Duration get _at {
+    final d = widget.source.duration;
+    if (d == null || d <= Duration.zero) return const Duration(seconds: 1);
+    return Duration(milliseconds: (d.inMilliseconds * 0.35).round());
   }
 
-  void _selectResult(bool value) {
-    if (_showResult == value) return;
-    setState(() => _showResult = value);
-    _loadVideoIfNeeded();
+  void _schedule({required bool immediate, required bool withBefore}) {
+    _debounce?.cancel();
+    setState(() => _loading = true);
+    _debounce = Timer(
+      immediate ? Duration.zero : const Duration(milliseconds: 280),
+      () => _render(withBefore: withBefore),
+    );
+  }
+
+  Future<void> _render({required bool withBefore}) async {
+    final generation = ++_generation;
+    final grabber = ref.read(frameGrabberProvider);
+    final source = widget.source;
+    final options = widget.options;
+    final isImage = source.isImage;
+
+    final before = withBefore || _before == null
+        ? grabber.grab(
+            inputPath: source.path,
+            at: _at,
+            isImage: isImage,
+            filters: EnhanceRecipe.previewBefore(options, source),
+            lane: 'enhance-before',
+            prefix: 'previa_antes',
+          )
+        : Future.value(_before);
+    final after = grabber.grab(
+      inputPath: source.path,
+      at: _at,
+      isImage: isImage,
+      filters: EnhanceRecipe.preview(options, source),
+      lane: 'enhance-after',
+      prefix: 'previa_depois',
+    );
+
+    final results = await Future.wait([before, after]);
+    if (!mounted || generation != _generation) return;
+    setState(() {
+      _before = results[0] ?? _before;
+      _after = results[1] ?? _after;
+      _loading = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final asset = _activeAsset;
-    final video = _videoController;
+    final source = widget.source;
+    final ratio = (source.aspectRatio ?? 16 / 9).clamp(0.62, 1.78);
+    final size = EnhanceRecipe.outputSize(widget.options, source);
+    final target = size == null
+        ? source.tierLabel
+        : source.copyWith(width: size.$1, height: size.$2).tierLabel;
 
+    return AspectRatio(
+      aspectRatio: ratio,
+      child: Viewfinder(
+        topLeft: HudText(
+          source.isVideo ? 'PREVIEW' : 'FOTO',
+          dot: AppColors.accent,
+        ),
+        topRight: HudText(
+          source.tierLabel == target
+              ? target
+              : '${source.tierLabel}  ›  $target',
+          color: AppColors.primary,
+        ),
+        child: _before == null && _after == null
+            ? Stack(
+                fit: StackFit.expand,
+                children: [
+                  MediaThumb(asset: source, fit: BoxFit.contain),
+                  const Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.6,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : BeforeAfter(before: _before, after: _after, loading: _loading),
+      ),
+    );
+  }
+}
+
+class _SourceStrip extends StatelessWidget {
+  const _SourceStrip({
+    required this.sources,
+    required this.selected,
+    required this.onSelect,
+    required this.onRemove,
+    required this.onAdd,
+    required this.enabled,
+  });
+
+  final List<MediaAsset> sources;
+  final int selected;
+  final ValueChanged<int> onSelect;
+  final ValueChanged<MediaAsset> onRemove;
+  final VoidCallback onAdd;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = sources[selected.clamp(0, sources.length - 1)];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Text('Prévia', style: Theme.of(context).textTheme.titleMedium),
-            const Spacer(),
-            if (widget.result != null)
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: false, label: Text('Original')),
-                  ButtonSegment(value: true, label: Text('Resultado')),
-                ],
-                selected: {_showResult},
-                onSelectionChanged: (selection) =>
-                    _selectResult(selection.first),
-              )
-            else
-              const PillLabel(text: 'Original', color: AppColors.textMuted),
+            Expanded(
+              child: Text(
+                current.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            if (sources.length > 1)
+              Text(
+                '${selected + 1}/${sources.length}',
+                style: AppTheme.timecode,
+              ),
           ],
         ),
-        const SizedBox(height: 10),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: AspectRatio(
-            aspectRatio: 16 / 10,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Container(color: AppColors.surfaceHigh),
-                if (asset.isVideo && video?.value.isInitialized == true)
-                  VideoPlayer(video!)
-                else if (!asset.isVideo)
-                  Image.file(
-                    File(asset.path),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const _PreviewFallback(),
-                  )
-                else
-                  const Center(
-                    child: CircularProgressIndicator(strokeWidth: 2),
+        const SizedBox(height: 2),
+        Text(
+          techLine(current),
+          style: AppTheme.timecode.copyWith(fontSize: 11),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 56,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: sources.length + 1,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) {
+              if (index == sources.length) {
+                return _Tile(
+                  onTap: enabled ? onAdd : null,
+                  child: const Icon(
+                    Icons.add_rounded,
+                    color: AppColors.textSecondary,
                   ),
-                Positioned(
-                  left: 12,
-                  right: 12,
-                  bottom: 12,
-                  child: Row(
-                    children: [
-                      if (asset.isVideo && video?.value.isInitialized == true)
-                        IconButton.filledTonal(
-                          tooltip: video!.value.isPlaying ? 'Pausar' : 'Reproduzir',
-                          onPressed: () => video.value.isPlaying
-                              ? video.pause()
-                              : video.play(),
-                          icon: Icon(
-                            video.value.isPlaying
-                                ? Icons.pause_rounded
-                                : Icons.play_arrow_rounded,
-                          ),
-                        ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.62),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            '${asset.name} · ${asset.resolutionLabel}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                );
+              }
+              final asset = sources[index];
+              return _Tile(
+                active: index == selected,
+                onTap: () => onSelect(index),
+                onLongPress: enabled ? () => onRemove(asset) : null,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MediaThumb(asset: asset),
+                    if (asset.isVideo)
+                      const Positioned(
+                        right: 3,
+                        bottom: 2,
+                        child: Icon(
+                          Icons.videocam_rounded,
+                          size: 12,
+                          color: Colors.white,
                         ),
                       ),
-                    ],
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              );
+            },
           ),
         ),
+        if (sources.length > 1)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              'Segure uma miniatura para tirar do lote.',
+              style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+            ),
+          ),
       ],
     );
   }
 }
 
-class _PreviewFallback extends StatelessWidget {
-  const _PreviewFallback();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Icon(
-        Icons.image_not_supported_outlined,
-        color: AppColors.textMuted,
-        size: 36,
-      ),
-    );
-  }
-}
-
-class _SourceChips extends StatelessWidget {
-  const _SourceChips({
-    required this.sources,
-    required this.onAdd,
-    required this.onRemove,
+class _Tile extends StatelessWidget {
+  const _Tile({
+    required this.child,
+    this.onTap,
+    this.onLongPress,
+    this.active = false,
   });
 
-  final List<MediaAsset> sources;
-  final VoidCallback onAdd;
-  final ValueChanged<MediaAsset> onRemove;
+  final Widget child;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 92,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: sources.length + 1,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
-        itemBuilder: (context, index) {
-          if (index == sources.length) {
-            return GestureDetector(
-              onTap: onAdd,
-              child: Container(
-                width: 92,
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: const Icon(Icons.add_rounded, color: AppColors.textMuted),
-              ),
-            );
-          }
-          final asset = sources[index];
-          return Container(
-            width: 148,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      asset.kind == MediaKind.video
-                          ? Icons.movie_rounded
-                          : Icons.image_rounded,
-                      size: 16,
-                      color: AppColors.teal,
-                    ),
-                    const Spacer(),
-                    InkWell(
-                      onTap: () => onRemove(asset),
-                      child: const Icon(
-                        Icons.close_rounded,
-                        size: 16,
-                        color: AppColors.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
-                Text(
-                  asset.name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                Text(
-                  '${asset.resolutionLabel} · ${asset.sizeLabel}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _DonePanel extends StatelessWidget {
-  const _DonePanel({
-    required this.results,
-    required this.onRerun,
-    required this.onSave,
-  });
-
-  final List<MediaAsset> results;
-  final VoidCallback onRerun;
-  final VoidCallback onSave;
-
-  @override
-  Widget build(BuildContext context) {
-    return SurfaceCard(
-      gradient: const LinearGradient(
-        colors: [Color(0xFF0E2A26), Color(0xFF10233A)],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.check_circle_rounded, color: AppColors.success),
-              const SizedBox(width: 10),
-              Text(
-                results.length == 1
-                    ? 'Pronto!'
-                    : '${results.length} arquivos prontos',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-            ],
+    return GestureDetector(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        width: 56,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: active ? AppColors.primary : AppColors.border,
+            width: active ? 1.6 : 1,
           ),
-          const SizedBox(height: 12),
-          for (final asset in results)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                '${asset.name} · ${asset.resolutionLabel} · ${asset.sizeLabel}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onSave,
-                  icon: const Icon(Icons.bookmark_add_outlined, size: 18),
-                  label: const Text('Salvar'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: onRerun,
-                  icon: const Icon(Icons.refresh_rounded, size: 18),
-                  label: const Text('Refazer'),
-                ),
-              ),
-            ],
+        ),
+        child: ClipRRect(borderRadius: BorderRadius.circular(8), child: child),
+      ),
+    );
+  }
+}
+
+class _ActionBar extends ConsumerWidget {
+  const _ActionBar({required this.state});
+
+  final EnhanceState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.read(enhanceControllerProvider.notifier);
+    final count = state.sources.length;
+    final Widget content;
+
+    if (state.isRunning) {
+      final eta = state.etaSeconds;
+      content = RenderProgressPanel(
+        fraction: state.progress,
+        title: count > 1
+            ? '${state.stage.label} · ${state.currentIndex + 1} de $count'
+            : state.stage.label,
+        detail: eta == null
+            ? 'Processando no aparelho'
+            : 'Faltam ~${_eta(eta)}',
+        onCancel: controller.cancel,
+      );
+    } else if (state.status == EnhanceStatus.done && state.results.isNotEmpty) {
+      content = ResultPanel(
+        assets: state.results,
+        feature: 'Aprimorar',
+        onAgain: controller.run,
+        againLabel: 'Refazer',
+      );
+    } else {
+      content = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (state.errorMessage != null) ...[
+            InlineError(state.errorMessage!),
+            const SizedBox(height: 10),
+          ],
+          Text(
+            state.options.activeFilters.isEmpty
+                ? 'Sem ajustes: cópia fiel'
+                : state.options.activeFilters.join('  ·  '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: AppTheme.timecode.copyWith(fontSize: 11),
+          ),
+          const SizedBox(height: 10),
+          PrimaryButton(
+            label: count > 1 ? 'Aprimorar $count arquivos' : 'Aprimorar',
+            icon: Icons.auto_awesome_rounded,
+            onPressed: controller.run,
           ),
         ],
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: const BoxDecoration(
+        color: AppColors.background,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        child: content,
       ),
     );
+  }
+
+  static String _eta(int seconds) {
+    if (seconds < 60) return '${seconds}s';
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return s == 0 ? '${m}min' : '${m}min ${s}s';
   }
 }

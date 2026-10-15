@@ -1,106 +1,138 @@
-enum EnhanceKind {
-  video('Vídeo', 'Upscale e nitidez frame a frame'),
-  images('Imagens', 'Upscale e nitidez em lote');
+import '../../../../core/media/cinema_look.dart';
+import '../../../../core/media/render_settings.dart';
 
-  const EnhanceKind(this.label, this.hint);
+/// Resolução de saída, sempre pelo **lado menor** — 1080 vale para 1920x1080
+/// e para 1080x1920, sem distorcer nem colocar faixas em vídeo vertical.
+enum EnhanceResolution {
+  auto('Auto', null, 'O melhor para cada arquivo'),
+  original('Original', null, 'Mantém o tamanho'),
+  hd('HD', 720, '720p · leve'),
+  fullHd('Full HD', 1080, '1080p · padrão das redes'),
+  qhd('2K', 1440, '1440p · mais detalhe'),
+  uhd('4K', 2160, '2160p · máximo');
+
+  const EnhanceResolution(this.label, this.shortSide, this.hint);
 
   final String label;
+  final int? shortSide;
   final String hint;
-}
-
-enum EnhancePreset {
-  hd720(1280, 720, 'HD', 'Mais leve, exporta rápido'),
-  fullHd(1920, 1080, 'Full HD', 'Padrão do YouTube'),
-  qhd(2560, 1440, '2K', 'Mais detalhes'),
-  ultraHd(3840, 2160, '4K', 'Máxima qualidade'),
-  keepOriginal(null, null, 'Original', 'Não redimensiona, só melhora');
-
-  const EnhancePreset(this.width, this.height, this.label, this.hint);
-
-  final int? width;
-  final int? height;
-  final String label;
-  final String hint;
-
-  bool get resizes => width != null;
-
-  String get resolutionLabel =>
-      width == null ? '—' : '${width}x$height';
 }
 
 class EnhanceOptions {
   const EnhanceOptions({
-    this.kind = EnhanceKind.video,
-    this.preset = EnhancePreset.fullHd,
-    this.aiUpscale = true,
-    this.denoise = false,
-    this.sharpen = true,
+    this.resolution = EnhanceResolution.auto,
+    this.denoise = true,
+    this.sharpness = 0.5,
     this.stabilize = false,
-    this.normalizeAudio = true,
+    this.cleanAudio = true,
+    this.look = CinemaLook.natural,
+    this.cinemaBars = false,
     this.brightness = 0,
     this.contrast = 0,
     this.saturation = 0,
-    this.targetFps = 30,
+    this.warmth = 0,
+    this.quality = RenderQuality.maxima,
   });
 
-  final EnhanceKind kind;
-  final EnhancePreset preset;
-  final bool aiUpscale;
+  final EnhanceResolution resolution;
   final bool denoise;
-  final bool sharpen;
+
+  /// 0 desliga; 1 é o máximo antes de aparecer halo.
+  final double sharpness;
   final bool stabilize;
-  final bool normalizeAudio;
+  final bool cleanAudio;
+  final CinemaLook look;
+  final bool cinemaBars;
+
+  /// Ajustes finos, de -1 a 1.
   final double brightness;
   final double contrast;
   final double saturation;
-  final int targetFps;
+  final double warmth;
 
-  double get estimatedScaleFactor {
-    if (!preset.resizes) return 1;
-    final target = preset.width!;
-    final source = 1080;
-    if (target <= source) return 1;
-    return double.parse((target / source).toStringAsFixed(1));
-  }
+  final RenderQuality quality;
+
+  bool get hasColorAdjust =>
+      brightness != 0 || contrast != 0 || saturation != 0 || warmth != 0;
 
   List<String> get activeFilters => [
-    if (preset.resizes) 'Escala ${preset.resolutionLabel}',
-    if (aiUpscale) 'Upscale IA (${estimatedScaleFactor}x)',
-    if (denoise) 'Redução de ruído',
-    if (sharpen) 'Nitidez',
-    if (kind == EnhanceKind.video && stabilize) 'Estabilização',
-    if (kind == EnhanceKind.video && normalizeAudio) 'Normalizar áudio',
+    if (resolution.shortSide != null) resolution.label,
+    if (denoise) 'Sem ruído',
+    if (sharpness > 0) 'Nitidez ${(sharpness * 100).round()}%',
+    if (stabilize) 'Estabilizado',
+    if (cleanAudio) 'Áudio limpo',
+    if (!look.isNeutral) look.label,
+    if (cinemaBars) '2.39:1',
     if (brightness != 0) 'Brilho ${_signed(brightness)}',
     if (contrast != 0) 'Contraste ${_signed(contrast)}',
     if (saturation != 0) 'Saturação ${_signed(saturation)}',
+    if (warmth != 0) 'Temperatura ${_signed(warmth)}',
   ];
 
   String _signed(double value) =>
       '${value > 0 ? '+' : ''}${(value * 100).round()}%';
 
   EnhanceOptions copyWith({
-    EnhanceKind? kind,
-    EnhancePreset? preset,
-    bool? aiUpscale,
+    EnhanceResolution? resolution,
     bool? denoise,
-    bool? sharpen,
+    double? sharpness,
     bool? stabilize,
-    bool? normalizeAudio,
+    bool? cleanAudio,
+    CinemaLook? look,
+    bool? cinemaBars,
     double? brightness,
     double? contrast,
     double? saturation,
-    int? targetFps,
+    double? warmth,
+    RenderQuality? quality,
   }) => EnhanceOptions(
-    kind: kind ?? this.kind,
-    preset: preset ?? this.preset,
-    aiUpscale: aiUpscale ?? this.aiUpscale,
+    resolution: resolution ?? this.resolution,
     denoise: denoise ?? this.denoise,
-    sharpen: sharpen ?? this.sharpen,
+    sharpness: sharpness ?? this.sharpness,
     stabilize: stabilize ?? this.stabilize,
-    normalizeAudio: normalizeAudio ?? this.normalizeAudio,
+    cleanAudio: cleanAudio ?? this.cleanAudio,
+    look: look ?? this.look,
+    cinemaBars: cinemaBars ?? this.cinemaBars,
     brightness: brightness ?? this.brightness,
     contrast: contrast ?? this.contrast,
     saturation: saturation ?? this.saturation,
-    targetFps: targetFps ?? this.targetFps,
+    warmth: warmth ?? this.warmth,
+    quality: quality ?? this.quality,
+  );
+
+  EnhanceOptions resetColor() =>
+      copyWith(brightness: 0, contrast: 0, saturation: 0, warmth: 0);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is EnhanceOptions &&
+          other.resolution == resolution &&
+          other.denoise == denoise &&
+          other.sharpness == sharpness &&
+          other.stabilize == stabilize &&
+          other.cleanAudio == cleanAudio &&
+          other.look == look &&
+          other.cinemaBars == cinemaBars &&
+          other.brightness == brightness &&
+          other.contrast == contrast &&
+          other.saturation == saturation &&
+          other.warmth == warmth &&
+          other.quality == quality;
+
+  @override
+  int get hashCode => Object.hash(
+    resolution,
+    denoise,
+    sharpness,
+    stabilize,
+    cleanAudio,
+    look,
+    cinemaBars,
+    brightness,
+    contrast,
+    saturation,
+    warmth,
+    quality,
   );
 }

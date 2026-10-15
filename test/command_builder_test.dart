@@ -1,6 +1,6 @@
-import 'package:aprimorar_video/core/engine/command_builder.dart';
-import 'package:aprimorar_video/core/engine/media_range.dart';
-import 'package:aprimorar_video/core/media/render_settings.dart';
+import 'package:vangogh/core/engine/command_builder.dart';
+import 'package:vangogh/core/engine/media_range.dart';
+import 'package:vangogh/core/media/render_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Achata os argumentos para uma string, facilitando as asserções.

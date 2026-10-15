@@ -18,10 +18,11 @@ class MediaProbe {
   const MediaProbe();
 
   Future<MediaAsset> enrich(MediaAsset asset) async {
-    if (!asset.isVideo || asset.path.isEmpty) return asset;
+    if (asset.path.isEmpty) return asset;
     if (!File(asset.path).existsSync()) return asset;
 
     final probed = await _enrichWithFfprobe(asset);
+    if (!asset.isVideo) return probed ?? asset;
     if (probed != null) return probed;
     return _enrichWithPlayer(asset);
   }
@@ -33,9 +34,9 @@ class MediaProbe {
   Future<bool> hasAudio(String path) async {
     final information = await _probe(path);
     if (information == null) return false;
-    return information
-        .getStreams()
-        .any((stream) => stream.getType() == 'audio');
+    return information.getStreams().any(
+      (stream) => stream.getType() == 'audio',
+    );
   }
 
   Future<MediaAsset?> _enrichWithFfprobe(MediaAsset asset) async {
@@ -51,15 +52,27 @@ class MediaProbe {
     }
 
     final duration = _seconds(information.getDuration());
-    final width = _int(video?.getStringProperty(StreamInformation.keyWidth));
-    final height = _int(video?.getStringProperty(StreamInformation.keyHeight));
+    var width = _int(video?.getStringProperty(StreamInformation.keyWidth));
+    var height = _int(video?.getStringProperty(StreamInformation.keyHeight));
+    // Celular grava vídeo em pé como 1920x1080 + metadado de rotação. O FFmpeg
+    // gira ao decodificar, então a UI e a escala precisam das medidas giradas.
+    if (_isQuarterTurn(video)) {
+      final swap = width;
+      width = height;
+      height = swap;
+    }
     final fps = _ratio(video?.getAverageFrameRate());
-    final bitrate = _int(information.getBitrate()) ??
+    final bitrate =
+        _int(information.getBitrate()) ??
         _int(video?.getStringProperty(StreamInformation.keyBitRate));
 
     // FFprobe sem streams de vídeo devolve format=null: trata como falha para
     // cair no `video_player`, que dá um erro mais claro.
     if (video == null && duration == null) return null;
+
+    if (!asset.isVideo) {
+      return asset.copyWith(width: width, height: height);
+    }
 
     return MediaAsset(
       path: asset.path,
@@ -104,6 +117,26 @@ class MediaProbe {
     } on Object {
       return null;
     }
+  }
+
+  bool _isQuarterTurn(StreamInformation? stream) {
+    if (stream == null) return false;
+    final props = stream.getAllProperties() ?? const {};
+    num? rotation;
+    final sideData = props['side_data_list'];
+    if (sideData is List) {
+      for (final entry in sideData) {
+        if (entry is Map && entry['rotation'] is num) {
+          rotation = entry['rotation'] as num;
+        }
+      }
+    }
+    final tags = props['tags'];
+    if (rotation == null && tags is Map) {
+      rotation = num.tryParse('${tags['rotate'] ?? ''}');
+    }
+    if (rotation == null) return false;
+    return (rotation.round().abs() % 180) == 90;
   }
 
   /// Duração em segundos. O FFprobe devolve string decimal.

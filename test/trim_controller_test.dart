@@ -1,12 +1,12 @@
-import 'package:aprimorar_video/core/engine/render_job.dart';
-import 'package:aprimorar_video/core/media/media_asset.dart';
-import 'package:aprimorar_video/core/media/media_probe.dart';
-import 'package:aprimorar_video/core/media/media_providers.dart';
-import 'package:aprimorar_video/core/media/render_settings.dart';
-import 'package:aprimorar_video/features/trim/application/trim_controller.dart';
-import 'package:aprimorar_video/features/trim/application/trim_state.dart';
-import 'package:aprimorar_video/features/trim/domain/entities/trim_plan.dart';
-import 'package:aprimorar_video/features/trim/domain/repositories/trim_repository.dart';
+import 'package:vangogh/core/engine/render_job.dart';
+import 'package:vangogh/core/media/media_asset.dart';
+import 'package:vangogh/core/media/media_probe.dart';
+import 'package:vangogh/core/media/media_providers.dart';
+import 'package:vangogh/core/media/render_settings.dart';
+import 'package:vangogh/features/trim/application/trim_controller.dart';
+import 'package:vangogh/features/trim/application/trim_state.dart';
+import 'package:vangogh/features/trim/domain/entities/trim_plan.dart';
+import 'package:vangogh/features/trim/domain/repositories/trim_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 

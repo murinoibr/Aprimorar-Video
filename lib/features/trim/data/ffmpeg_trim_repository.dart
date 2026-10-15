@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import '../../../core/engine/clip_assembler.dart';
 import '../../../core/engine/command_builder.dart';
 import '../../../core/engine/ffmpeg_render_engine.dart';
 import '../../../core/engine/media_range.dart';
@@ -26,12 +27,16 @@ class FfmpegTrimRepository implements TrimRepository {
     RenderStaging? staging,
     HwCodec? codec,
   }) : _staging = staging ?? const RenderStaging(),
-       _codec = codec ?? FfmpegRenderEngine.defaultCodec;
+       _assembler = ClipAssembler(
+         engine: engine,
+         codec: codec ?? FfmpegRenderEngine.defaultCodec,
+         staging: staging,
+       );
 
   final RenderEngine engine;
   final MediaProbe probe;
   final RenderStaging _staging;
-  final HwCodec _codec;
+  final ClipAssembler _assembler;
 
   String? _outputPath;
   TrimPlan? _lastPlan;
@@ -53,7 +58,9 @@ class FfmpegTrimRepository implements TrimRepository {
     _lastPlan = plan;
 
     final outputPath = await _staging.newOutputPath(
-      prefix: plan.cutCount <= 0 ? 'corte' : 'corte_${plan.cutCount + 1}trechos',
+      prefix: plan.cutCount <= 0
+          ? 'corte'
+          : 'corte_${plan.cutCount + 1}trechos',
       extension: 'mp4',
     );
 
@@ -61,24 +68,19 @@ class FfmpegTrimRepository implements TrimRepository {
     // maioria dos vídeos gravados por celular tem áudio, mas não todos.
     final hasAudio = await probe.hasAudio(source.path);
 
-    final request = RenderRequest(
-      arguments: FfmpegCommand.concatenate(
-        inputPath: source.path,
-        outputPath: outputPath,
-        ranges: plan.segments
-            .map((segment) => MediaRange(segment.start, segment.end))
-            .where((range) => !range.isEmpty)
-            .toList(),
-        settings: settings,
-        codec: _codec,
-        sourceHasAudio: hasAudio,
-      ),
+    yield* _assembler.assemble(
+      inputPath: source.path,
       outputPath: outputPath,
-      expectedDurationMs: plan.totalLength.inMilliseconds,
-      label: plan.cutCount == 0 ? 'Exportar corte' : 'Exportar ${plan.cutCount + 1} trechos',
+      ranges: plan.segments
+          .map((segment) => MediaRange(segment.start, segment.end))
+          .where((range) => !range.isEmpty)
+          .toList(),
+      settings: settings,
+      sourceHasAudio: hasAudio,
+      label: plan.cutCount == 0
+          ? 'Exportar corte'
+          : 'Exportar ${plan.cutCount + 1} trechos',
     );
-
-    yield* engine.run(request);
 
     // Só marca o caminho depois que o stream fecha sem erro: em cancelamento ou
     // falha, `buildResult` não deve descrever um arquivo pela metade.
@@ -116,5 +118,5 @@ class FfmpegTrimRepository implements TrimRepository {
   }
 
   @override
-  void cancel() => unawaited(engine.cancel());
+  void cancel() => unawaited(_assembler.cancel());
 }

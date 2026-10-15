@@ -1,4 +1,30 @@
-# Aprimorar-Video
+# Aprimorar-Video (VanGogh)
+
+Estúdio de vídeo e foto que roda inteiro no aparelho, com FFmpeg: sem nuvem,
+sem modelo de IA pago, sem custo por uso.
+
+## O que o app faz
+
+- **Aprimorar** (vídeo e fotos em lote): upscale pelo lado menor (HD a 4K,
+  vertical continua vertical), redução de ruído e banding, nitidez, estabilização,
+  áudio limpo com volume padronizado e ajustes de cor. Prévia instantânea
+  antes/depois: um quadro real processado pela mesma receita do export.
+- **Looks de cinema**: Teal & Orange, Deserto, Neon Noir, Película 35mm, Noir
+  Prata e Pastel, além das faixas 2.39:1. Tudo com filtros nativos do FFmpeg,
+  sem LUT para baixar.
+- **Melhores momentos**: uma passada de análise (só quadros-chave + energia do
+  áudio) acha picos, cortes de cena e movimento; você escolhe 30 s a 2 min.
+- **Cortar**: trechos com precisão de quadro, filmstrip real na timeline.
+- **Exportação rápida**: cada trecho é renderizado com seek de entrada e unido
+  por cópia, então o tempo depende do corte, não do tamanho da fonte. Se o
+  encoder de hardware falhar, o app tenta de novo por software sozinho.
+- **Biblioteca** persistente e "Salvar na galeria" em todo resultado.
+
+## Testes
+
+`flutter test` roda a lógica e a interface. `test/ffmpeg_native_test.dart`
+executa os comandos gerados no FFmpeg instalado na máquina (é pulado se não
+houver `ffmpeg` no PATH).
 
 ## Apoio opcional
 

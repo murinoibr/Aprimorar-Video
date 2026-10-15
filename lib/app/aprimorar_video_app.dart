@@ -9,7 +9,7 @@ class AprimorarVideoApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Aprimorar Vídeo',
+      title: 'VanGogh',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
       themeMode: ThemeMode.dark,

@@ -85,7 +85,11 @@ class TrimController extends Notifier<TrimState> {
 
   void setPlayhead(Duration position, {bool seek = false}) {
     if (!state.hasSource) return;
-    final clamped = TrimEditor.clamp(position, Duration.zero, state.sourceDuration);
+    final clamped = TrimEditor.clamp(
+      position,
+      Duration.zero,
+      state.sourceDuration,
+    );
     final maxIndex = state.segments.isEmpty ? 0 : state.segments.length - 1;
     final found =
         TrimEditor.indexOfSegmentAt(
@@ -136,7 +140,8 @@ class TrimController extends Notifier<TrimState> {
     );
     if (remaining.isEmpty) {
       state = state.copyWith(
-        errorMessage: 'O corte não pode ficar vazio. Desfaça ou recarregue o vídeo.',
+        errorMessage:
+            'O corte não pode ficar vazio. Desfaça ou recarregue o vídeo.',
       );
       return;
     }
@@ -146,7 +151,11 @@ class TrimController extends Notifier<TrimState> {
     state = state.copyWith(
       segments: remaining,
       activeIndex: index,
-      playhead: TrimEditor.clamp(state.playhead, remaining[index].start, remaining[index].end),
+      playhead: TrimEditor.clamp(
+        state.playhead,
+        remaining[index].start,
+        remaining[index].end,
+      ),
       clearError: true,
     );
   }
@@ -169,7 +178,10 @@ class TrimController extends Notifier<TrimState> {
     _checkpoint();
     _idCounter = 1;
     state = state.copyWith(
-      segments: TrimEditor.initial(sourceDuration: state.sourceDuration, id: _nextId()),
+      segments: TrimEditor.initial(
+        sourceDuration: state.sourceDuration,
+        id: _nextId(),
+      ),
       activeIndex: 0,
       playhead: Duration.zero,
       clearError: true,
@@ -199,13 +211,21 @@ class TrimController extends Notifier<TrimState> {
   void undo() {
     if (_past.isEmpty) return;
     _future.add(state.segments);
-    _apply(_past.removeLast(), undoCount: _past.length, redoCount: _future.length);
+    _apply(
+      _past.removeLast(),
+      undoCount: _past.length,
+      redoCount: _future.length,
+    );
   }
 
   void redo() {
     if (_future.isEmpty) return;
     _past.add(state.segments);
-    _apply(_future.removeLast(), undoCount: _past.length, redoCount: _future.length);
+    _apply(
+      _future.removeLast(),
+      undoCount: _past.length,
+      redoCount: _future.length,
+    );
   }
 
   void _apply(
@@ -244,33 +264,35 @@ class TrimController extends Notifier<TrimState> {
     final plan = state.plan;
     final settings = state.settings;
 
-    _subscription = repository.render(source, plan, settings).listen(
-      (value) => state = state.copyWith(progress: value),
-      onError: (Object error) => state = state.copyWith(
-        status: TrimStatus.failure,
-        progress: 0,
-        errorMessage: _messageFor(error),
-      ),
-      onDone: () async {
-        // O stream fecha mesmo depois de emitir erro: sem esta guarda, uma
-        // exportação falha e em seguida vira "concluído" com resultado vazio.
-        if (state.status != TrimStatus.rendering) return;
-        try {
-          final result = await repository.buildResult(settings);
-          state = state.copyWith(
-            status: TrimStatus.done,
-            progress: 1,
-            result: result,
-          );
-        } on Object catch (error) {
-          state = state.copyWith(
+    _subscription = repository
+        .render(source, plan, settings)
+        .listen(
+          (value) => state = state.copyWith(progress: value),
+          onError: (Object error) => state = state.copyWith(
             status: TrimStatus.failure,
             progress: 0,
             errorMessage: _messageFor(error),
-          );
-        }
-      },
-    );
+          ),
+          onDone: () async {
+            // O stream fecha mesmo depois de emitir erro: sem esta guarda, uma
+            // exportação falha e em seguida vira "concluído" com resultado vazio.
+            if (state.status != TrimStatus.rendering) return;
+            try {
+              final result = await repository.buildResult(settings);
+              state = state.copyWith(
+                status: TrimStatus.done,
+                progress: 1,
+                result: result,
+              );
+            } on Object catch (error) {
+              state = state.copyWith(
+                status: TrimStatus.failure,
+                progress: 0,
+                errorMessage: _messageFor(error),
+              );
+            }
+          },
+        );
   }
 
   /// Traduz falha do motor em texto que o cliente entende.
@@ -281,6 +303,11 @@ class TrimController extends Notifier<TrimState> {
     if (error is RenderCancelled) return 'Exportação cancelada.';
     if (error is RenderFailure) return error.message;
     return 'Falha ao exportar: $error';
+  }
+
+  /// Fecha o painel de resultado e volta para a edição.
+  void dismissResult() {
+    state = state.copyWith(status: TrimStatus.ready, clearResult: true);
   }
 
   void cancel() {
